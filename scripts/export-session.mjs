@@ -54,10 +54,10 @@ export function extractRows(rows) {
   let turnId = 'initial';
   let compactions = 0;
   let unmarkedAssistant = 0;
-  function add(role, text, source, row, payload = {}, matchText = text) {
+  function add(role, text, source, row, payload = {}, matchText = text, kind = undefined) {
     if (!text?.trim()) return;
     candidates.push({ role, text, source, timestamp: row.timestamp ?? null,
-      turnId: payload.turn_id ?? turnId, line: row.__line ?? null, matchText });
+      turnId: payload.turn_id ?? turnId, line: row.__line ?? null, matchText, kind });
   }
   for (const row of rows) {
     const p = row.payload ?? {};
@@ -74,9 +74,13 @@ export function extractRows(rows) {
     }
     if (row.type !== 'response_item' || p.type !== 'message') continue;
     if (p.role === 'user') {
+      const rawText = contentText(p.content);
       const textOnly = Array.isArray(p.content)
         ? p.content.filter(x => typeof x === 'string' || typeof x?.text === 'string') : p.content;
-      add('user', cleanUserText(contentText(p.content)), 'message', row, p, cleanUserText(contentText(textOnly)));
+      const cleanText = cleanUserText(rawText);
+      const kind = /^<codex_internal_context\b[^>]*\bsource=["']user_goal["']/.test(rawText.trim())
+        ? 'goal' : undefined;
+      add('user', cleanText, 'message', row, p, cleanUserText(contentText(textOnly)), kind);
     }
     if (p.role === 'assistant') {
       const phase = p.phase ?? p.channel;
@@ -100,7 +104,7 @@ export function extractRows(rows) {
     const ordinal = (fallbackCounts.get(key) ?? 0) + 1;
     fallbackCounts.set(key, ordinal);
     return ordinal > (primaryCounts.get(key) ?? 0);
-  }).map(({ source, matchText, ...x }) => x);
+  }).map(({ source, matchText, kind, ...x }) => ({ ...x, ...(kind ? { kind } : {}) }));
   const warnings = [];
   if (unmarkedAssistant && !candidates.some(x => x.role === 'assistant' && x.source === 'completion')) {
     warnings.push(`${unmarkedAssistant} 条未标注阶段的助手消息未导出：日志中没有可确认最终答复的完成事件。`);
@@ -108,7 +112,51 @@ export function extractRows(rows) {
   return { meta, messages, compactions, warnings };
 }
 
-export async function readSession(file) {
+export async function readGoal(codexHome, threadId) {
+  if (!codexHome || !threadId) return { goal: null, warning: null };
+  const databasePath = path.join(codexHome, 'goals_1.sqlite');
+  try {
+    await fsp.access(databasePath, fs.constants.R_OK);
+  } catch (error) {
+    if (error.code === 'ENOENT') return { goal: null, warning: null };
+    return { goal: null, warning: `无法读取目标数据库 ${databasePath}：${error.message}` };
+  }
+  try {
+    const { DatabaseSync } = await import('node:sqlite');
+    const database = new DatabaseSync(databasePath, { readOnly: true });
+    try {
+      const goal = database.prepare(`
+        SELECT goal_id, objective, status, created_at_ms, updated_at_ms
+        FROM thread_goals WHERE thread_id = ?
+      `).get(threadId) ?? null;
+      return { goal, warning: null };
+    } finally {
+      database.close();
+    }
+  } catch (error) {
+    return { goal: null, warning: `无法读取目标数据库 ${databasePath}：${error.message}` };
+  }
+}
+
+export function attachGoal(transcript, goal) {
+  if (!goal?.objective?.trim()) return transcript;
+  const objective = goal.objective.trim();
+  const existing = transcript.messages.find(message => message.role === 'user'
+    && message.text.trim() === objective);
+  if (existing) {
+    existing.kind = 'goal';
+  } else {
+    transcript.messages.unshift({
+      role: 'user', kind: 'goal', text: objective,
+      timestamp: Number.isFinite(goal.created_at_ms) ? new Date(goal.created_at_ms).toISOString() : null,
+      turnId: `goal:${goal.goal_id ?? 'current'}`, line: 0,
+    });
+  }
+  transcript.goal = goal;
+  return transcript;
+}
+
+export async function readSession(file, { codexHome } = {}) {
   const stat = await fsp.stat(file);
   if (!stat.isFile() || !stat.size) throw new Error(`日志为空或不是文件：${file}`);
   const handle = await fsp.open(file, 'r');
@@ -139,6 +187,9 @@ export async function readSession(file) {
   const result = extractRows(rows);
   if (!result.meta.id && !result.meta.session_id) result.warnings.push('日志缺少 session_meta 会话标识，请确认这是完整的原始日志。');
   if (partial.length) result.warnings.push(`忽略尚未写完的末尾 JSON 行（第 ${line} 行）；稍后重新导出可更新预览。`);
+  const storedGoal = await readGoal(codexHome, result.meta.id ?? result.meta.session_id);
+  if (storedGoal.warning) result.warnings.push(storedGoal.warning);
+  attachGoal(result, storedGoal.goal);
   return { ...result, source: path.resolve(file), snapshotBytes: stat.size };
 }
 
@@ -203,7 +254,8 @@ function info(transcript) {
     source: transcript.source, cwd: transcript.meta.cwd ?? '',
     userMessages: transcript.messages.filter(x => x.role === 'user').length,
     finalReplies: transcript.messages.filter(x => x.role === 'assistant').length,
-    compactions: transcript.compactions, snapshotBytes: transcript.snapshotBytes, warnings: transcript.warnings };
+    compactions: transcript.compactions, goal: transcript.goal ?? null,
+    snapshotBytes: transcript.snapshotBytes, warnings: transcript.warnings };
 }
 
 export function renderMarkdown(transcript) {
@@ -212,7 +264,8 @@ export function renderMarkdown(transcript) {
     `用户消息：${details.userMessages} · 最终回复：${details.finalReplies} · 压缩记录：${details.compactions}`];
   if (details.warnings.length) parts.push(`导出提示：${details.warnings.join(' ')}`);
   for (const [index, message] of transcript.messages.entries()) {
-    parts.push(`## ${index + 1}. ${message.role === 'user' ? '用户' : '最终回复'}`, message.text);
+    const label = message.kind === 'goal' ? '用户目标 (/goal)' : message.role === 'user' ? '用户' : '最终回复';
+    parts.push(`## ${index + 1}. ${label}`, message.text);
   }
   return parts.join('\n\n') + '\n';
 }
@@ -224,7 +277,7 @@ export function escapeHtml(text) {
 export function renderHtml(transcript) {
   const details = info(transcript);
   const cards = transcript.messages.map((message, index) => `<article class="message ${message.role}" id="message-${index + 1}">
-<div class="label"><span>${message.role === 'user' ? '用户' : '最终回复'}</span><a href="#message-${index + 1}" aria-label="定位消息 ${index + 1}">#${index + 1}</a></div>
+<div class="label"><span>${message.kind === 'goal' ? '用户目标 (/goal)' : message.role === 'user' ? '用户' : '最终回复'}</span><a href="#message-${index + 1}" aria-label="定位消息 ${index + 1}">#${index + 1}</a></div>
 <pre class="content">${escapeHtml(message.text)}</pre></article>`).join('\n');
   return `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -285,7 +338,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     return;
   }
   const file = await resolveSession({ ...opts, codexHome, threadId: env.CODEX_THREAD_ID });
-  const transcript = await readSession(file);
+  const transcript = await readSession(file, { codexHome });
   const details = info(transcript);
   const directory = path.resolve(opts.outputDir || 'conversation-preview');
   const basename = details.sessionId.replace(/[^a-zA-Z0-9._-]/g, '_').replace(/^\.+$/, 'session');

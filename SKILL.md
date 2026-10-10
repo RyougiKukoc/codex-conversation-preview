@@ -5,9 +5,11 @@ description: Preview or export Codex CLI conversations as user questions and fin
 
 # Conversation Preview
 
-Generate a faithful transcript from local Codex rollout JSONL files, never from
-the model's current context, a compaction summary, or `history.jsonl` (which lacks
-assistant replies). Keep original wording and chronological order.
+Generate a faithful transcript from local Codex rollout JSONL files plus the
+matching `goals_1.sqlite` record, never from the model's current context or a
+compaction summary. Keep original wording and chronological order. A persistent
+goal is shown as `用户目标 (/goal)` even when Codex did not copy the `/goal`
+command into the rollout JSONL.
 
 ## Export
 
@@ -50,6 +52,11 @@ Exporting other sessions should follow the user's requested scope.
   `compacted` entry. Never replace earlier messages with `replacement_history`,
   `retained_context`, or a compaction summary. Repeated legitimate questions and
   replies remain distinct.
+- Read `goals_1.sqlite` from the same Codex home and match `thread_goals.thread_id`
+  to the session ID. This is the authoritative local record for `/goal`; include
+  its objective once, mark it as a user goal, and preserve its status in the JSON
+  report. If the database is absent, continue with a warning only when a read
+  error occurs.
 - Retain actual user messages and assistant messages with `phase: final_answer`
   (or legacy `channel: final`). Completion events can recover final replies from
   older logs without phase markers; do not guess that an unmarked assistant

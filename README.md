@@ -8,8 +8,9 @@ Markdown 和可搜索的离线 HTML 预览。
 
 ## 特点
 
-- 读取原始 rollout JSONL，而不是模型当前上下文或压缩摘要。
+- 读取原始 rollout JSONL 和本地 `goals_1.sqlite`，而不是模型当前上下文或压缩摘要。
 - 保留 `/compact` 前后的原文和时间顺序，跳过压缩摘要及其替代历史。
+- 读取 `thread_goals`，补回没有写入 rollout JSONL 的 `/goal` 目标，并避免重复显示。
 - 过滤推理、进度说明、工具调用和环境/技能注入信息。
 - 默认按 `CODEX_THREAD_ID` 精确选择当前会话，不会误用最近的其他会话。
 - 支持旧版完成事件、重复消息去重、正在写入的日志末尾。
@@ -108,6 +109,11 @@ node scripts/export-session.mjs --session <session-id> --format md
 导出器从本地文件开头读取，遇到 `compacted` 记录时继续处理后面的原始消息，
 不会用 `replacement_history`、`retained_context` 或压缩摘要替换此前内容。
 在已验证的实际日志中，压缩前的原始记录仍保存在文件里。
+
+`/goal` 的持久目标保存在 Codex home 下的 `goals_1.sqlite`，不一定会作为普通
+用户消息写入 rollout JSONL。导出器按会话 ID 读取 `thread_goals`，把目标显示为
+`用户目标 (/goal)`；如果压缩记录中已经包含同一目标，则只保留一份。目标状态
+会出现在命令返回的 JSON 中。
 
 只有能够确认的最终答复才会导出：`phase: final_answer`、旧版 `channel: final`，
 或 `task_complete.last_agent_message`。未标注的助手消息不会被猜测为最终答复。

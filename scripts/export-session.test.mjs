@@ -7,7 +7,8 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
 import test from 'node:test';
-import { cleanUserText, extractRows, readSession, listSessions, resolveSession, renderHtml, renderMarkdown } from './export-session.mjs';
+import { DatabaseSync } from 'node:sqlite';
+import { cleanUserText, extractRows, readSession, readGoal, attachGoal, listSessions, resolveSession, renderHtml, renderMarkdown } from './export-session.mjs';
 
 const row = (type, payload) => ({ type, payload, timestamp: '2026-10-10T00:00:00Z' });
 const start = id => row('event_msg', { type: 'task_started', turn_id: id });
@@ -94,6 +95,39 @@ test('reads a live snapshot and tolerates only an unfinished last line', async t
   await assert.rejects(readSession(file), /第 2 行/);
   await fs.writeFile(file, JSON.stringify(metadata('bad')) + '\nINVALID\n');
   await assert.rejects(readSession(file), /第 2 行/);
+});
+
+test('reads the persistent /goal objective from goals_1.sqlite and avoids duplicates', async t => {
+  const root = await temporary(t);
+  const file = path.join(root, 'sessions', 'rollout-goal.jsonl');
+  const goal = '只导出问题和最终答复，并保留 /compact 前的目标。';
+  await writeLog(file, [metadata('goal-thread'), start('a'), message('user', '普通问题'), message('assistant', '最终答复', 'final_answer')]);
+  const database = new DatabaseSync(path.join(root, 'goals_1.sqlite'));
+  database.exec(`CREATE TABLE thread_goals (
+    thread_id TEXT PRIMARY KEY NOT NULL, goal_id TEXT NOT NULL, objective TEXT NOT NULL,
+    status TEXT NOT NULL, token_budget INTEGER, tokens_used INTEGER NOT NULL DEFAULT 0,
+    time_used_seconds INTEGER NOT NULL DEFAULT 0, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL
+  )`);
+  database.prepare('INSERT INTO thread_goals (thread_id, goal_id, objective, status, created_at_ms, updated_at_ms) VALUES (?, ?, ?, ?, ?, ?)')
+    .run('goal-thread', 'goal-id', goal, 'active', 1791594977558, 1791594977558);
+  database.close();
+  const result = await readSession(file, { codexHome: root });
+  assert.equal(result.goal.objective, goal);
+  assert.deepEqual(texts(result), [['user', goal], ['user', '普通问题'], ['assistant', '最终答复']]);
+  assert.equal(result.messages[0].kind, 'goal');
+  assert.equal(result.warnings.length, 0);
+
+  const withContextFile = path.join(root, 'sessions', 'rollout-goal-context.jsonl');
+  const goalContext = `<codex_internal_context source="user_goal">\nUser set the goal: "${goal}"\nUser set goal status: "active".\n</codex_internal_context>`;
+  await writeLog(withContextFile, [metadata('goal-thread'), message('user', goalContext), message('assistant', '最终答复', 'final_answer')]);
+  const withContext = await readSession(withContextFile, { codexHome: root });
+  assert.equal(withContext.messages.filter(x => x.text === goal).length, 1);
+  assert.equal(withContext.messages[0].kind, 'goal');
+  const manual = { messages: [{ role: 'user', text: goal }] };
+  attachGoal(manual, result.goal);
+  assert.equal(manual.messages.length, 1);
+  assert.equal(manual.messages[0].kind, 'goal');
+  assert.equal((await readGoal(root, 'missing')).goal, null);
 });
 
 test('resolves exact current or archived session, with no latest-session fallback', async t => {
