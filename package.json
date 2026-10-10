@@ -1,0 +1,18 @@
+{
+  "name": "codex-conversation-preview",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Export user questions and final replies from complete local Codex session logs, preserving pre-compaction history.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test scripts/export-session.test.mjs"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/RyougiKukoc/codex-conversation-preview.git"
+  }
+}

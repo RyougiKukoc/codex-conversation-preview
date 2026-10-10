@@ -1,0 +1,8 @@
+# Generated previews and raw conversation logs
+/conversation-preview/
+*.jsonl
+
+# Local dependencies and OS files
+node_modules/
+.DS_Store
+Thumbs.db

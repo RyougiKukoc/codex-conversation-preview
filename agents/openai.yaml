@@ -1,0 +1,4 @@
+interface:
+  display_name: "会话精简预览"
+  short_description: "从 Codex 本地日志导出提问和最终答复，保留压缩前的完整历史"
+  default_prompt: "使用 $conversation-preview 从本地完整日志生成当前会话的精简预览。"
