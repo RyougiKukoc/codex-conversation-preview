@@ -128,10 +128,8 @@ npm test
 
 测试涵盖压缩前后原文保留、重复事件表示、旧版最终回复、上下文过滤、附件、
 活动日志快照、精确会话选择、HTML 转义和搜索，以及完整 CLI 导出。
-仓库附带 [GitHub Actions 模板](ci/github-actions.yml)，配置了 Windows、Linux
-和 Node.js 22、24 的测试矩阵。需要自动测试时，将该模板保存为
-`.github/workflows/test.yml` 后提交；上传工作流需要 GitHub 凭据具有相应权限。
-模板目前不自动执行。
+仓库附带 [GitHub Actions 工作流](.github/workflows/test.yml)，会在 Windows、Linux
+和 Node.js 22、24 上运行同一套测试。
 
 ## License
 
